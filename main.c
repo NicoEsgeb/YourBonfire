@@ -37,8 +37,22 @@ Texture loadPPM(const char* filename) {
 
 void renderTexture(Texture texture, float x, float y, float width, float height) {
     glEnable(GL_TEXTURE_2D);
+    
+    // Bind the texture
+    GLuint tex;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+
+    // Set texture parameters
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    // Load texture data
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, texture.width, texture.height, 0, GL_RGB, GL_UNSIGNED_BYTE, texture.data);
 
+    // Render the quad with the texture
     glBegin(GL_QUADS);
     glTexCoord2f(0.0f, 0.0f); glVertex2f(x, y);
     glTexCoord2f(1.0f, 0.0f); glVertex2f(x + width, y);
@@ -46,16 +60,9 @@ void renderTexture(Texture texture, float x, float y, float width, float height)
     glTexCoord2f(0.0f, 1.0f); glVertex2f(x, y + height);
     glEnd();
 
+    glDeleteTextures(1, &tex);
     glDisable(GL_TEXTURE_2D);
 }
-
-
-
-
-
-
-
-
 
 typedef struct {
     float x, y;        // Position of the particle
@@ -65,43 +72,59 @@ typedef struct {
     float life;        // Remaining life of the particle
 } Particle;
 
-
 Particle particles[MAX_PARTICLES];
+
+void initParticle(Particle *p) {
+    // Expanded source area for the embers
+    p->x = ((float)rand() / RAND_MAX - 0.5f) * 0.2f; // Spread source on x-axis
+    p->y = -0.75f;
+
+    // Initial speeds with slight variations
+    p->speedX = ((float)rand() / RAND_MAX - 0.5f) * 0.02f;
+    p->speedY = ((float)rand() / RAND_MAX) * 0.05f + 0.1f;
+
+    p->r = 1.0f;
+    p->g = (float)rand() / RAND_MAX * 0.5f;
+    p->b = 0.0f;
+    p->a = 1.0f;
+
+    p->size = ((float)rand() / RAND_MAX) * 2.0f + 1.0f;
+    p->life = ((float)rand() / RAND_MAX) * 0.5f + 0.5f;
+}
 
 void initParticles() {
     for (int i = 0; i < MAX_PARTICLES; i++) {
-        particles[i].x = 0.0f;
-        particles[i].y = -0.5f;
-        particles[i].speedX = ((float)rand() / RAND_MAX - 0.5f) * 0.1f;
-        particles[i].speedY = ((float)rand() / RAND_MAX) * 0.05f;
-        particles[i].r = 1.0f;
-        particles[i].g = (float)rand() / RAND_MAX * 0.5f;
-        particles[i].b = 0.0f;
-        particles[i].a = 1.0f;
-        particles[i].size = ((float)rand() / RAND_MAX) * 5.0f + 1.0f; // Random size between 1 and 6
-        particles[i].life = 1.0f;
+        initParticle(&particles[i]);
     }
 }
-
 
 void updateParticles(float deltaTime) {
     for (int i = 0; i < MAX_PARTICLES; i++) {
+        // Update position
         particles[i].x += particles[i].speedX * deltaTime;
         particles[i].y += particles[i].speedY * deltaTime;
-        particles[i].speedX += (float)(rand() % 10 - 5) * 0.001f; // Add a slight random curve to the motion
-        particles[i].life -= deltaTime * 0.5f;
+
+        // Introduce interaction-like randomness
+        particles[i].speedX += ((float)rand() / RAND_MAX - 0.5f) * 0.004f;
+        particles[i].speedY += ((float)rand() / RAND_MAX - 0.5f) * 0.004f;
+
+        // Add slight upward acceleration to simulate buoyancy
+        particles[i].speedY += 0.001f;
+
+        // Apply slight damping to both speedX and speedY for smoother movement
+        particles[i].speedX *= 0.99f;
+        particles[i].speedY *= 0.99f;
+
+        // Decrease life and update alpha value
+        particles[i].life -= deltaTime * 0.1f;
         particles[i].a = particles[i].life;
+
+        // Respawn particle immediately if its life ends
         if (particles[i].life <= 0.0f) {
-            particles[i].x = 0.0f;
-            particles[i].y = -0.5f;
-            particles[i].speedX = ((float)rand() / RAND_MAX - 0.5f) * 0.1f;
-            particles[i].speedY = ((float)rand() / RAND_MAX) * 0.05f;
-            particles[i].size = ((float)rand() / RAND_MAX) * 5.0f + 1.0f;
-            particles[i].life = 1.0f;
+            initParticle(&particles[i]);
         }
     }
 }
-
 
 void renderParticles() {
     for (int i = 0; i < MAX_PARTICLES; i++) {
@@ -112,9 +135,6 @@ void renderParticles() {
         glEnd();
     }
 }
-
-
-
 
 int main() {
     if (!glfwInit()) {
