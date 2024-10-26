@@ -1,15 +1,29 @@
 // imgui_wrapper.cpp
+#include <stdio.h>              // Include for printf
 #include "imgui_wrapper.h"
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
+
+// Define the global font pointer
+ImFont* g_largeFont = nullptr;
 
 // Initialize ImGui
 void ImGui_Init(GLFWwindow* window) {
     // Setup Dear ImGui context
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-    // ImGuiIO& io = ImGui::GetIO(); (void)io;
+    ImGuiIO& io = ImGui::GetIO(); (void)io;
+
+    // Load default font
+    io.Fonts->AddFontDefault();
+
+    // Load custom large font
+    g_largeFont = io.Fonts->AddFontFromFileTTF("assets/Arial.ttf", 24.0f); // Adjusted to 24.0f
+    if (!g_largeFont) {
+        printf("Failed to load large font! Using default font.\n");
+        // Optionally, set a fallback font or notify the user via the UI
+    }
 
     // Setup Dear ImGui style
     ImGui::StyleColorsDark();
@@ -58,4 +72,3 @@ void ImGui_Shutdown() {
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
 }
-

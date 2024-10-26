@@ -5,13 +5,16 @@
 #include <GLFW/glfw3.h>        // GLFW library for handling window and OpenGL context
 #include <stdlib.h>            // Standard library for general functions like malloc, rand, etc.
 #include <math.h>              // Math library for mathematical functions
+#include <string>              // For std::string
 #include "imgui_wrapper.h"     // Header file for the ImGui wrapper
 
-#define STB_IMAGE_IMPLEMENTATION // *** Added
-#include "stb_image.h"           // *** Added
+#define STB_IMAGE_IMPLEMENTATION // Required for stb_image
+#include "stb_image.h"           // stb_image for texture loading
 
-#include <SDL2/SDL.h>            // *** Added: SDL2 for audio
-#include <SDL2/SDL_mixer.h>      // *** Added: SDL_mixer for audio mixing
+#include <SDL2/SDL.h>            // SDL2 for audio
+#include <SDL2/SDL_mixer.h>      // SDL_mixer for audio mixing
+
+#include <chrono>                // For high-resolution clock (optional)
 
 #define MAX_PARTICLES 3000             // Maximum number of particles in the simulation
 #define EXPLOSION_PARTICLES 30         // Number of particles created in an explosion
@@ -34,8 +37,8 @@ int maxParticles = 1000;             // Default to 1000 particles
 int explosionChance = 1;             // Default explosion chance (%)
 float minSize = 10.0f;               // Minimum particle size
 float maxSize = 100.0f;              // Maximum particle size
-float explosionMinSize = 5.0f;       // Increased minimum size for explosion particles
-float explosionMaxSize = 15.0f;      // Increased maximum size for explosion particles
+float explosionMinSize = 5.0f;       // Minimum size for explosion particles
+float explosionMaxSize = 15.0f;      // Maximum size for explosion particles
 float minLife = 0.05f;               // Minimum particle life
 float maxLife = 1.2f;                // Maximum particle life
 float minSpeedX = -0.05f;            // Minimum speedX
@@ -44,8 +47,15 @@ float minSpeedY = 0.1f;              // Minimum speedY
 float maxSpeedY = 0.15f;             // Maximum speedY
 float baseColor[3] = {1.0f, 0.5f, 0.0f}; // Base color (Yellowish)
 
-// *** Added: Volume Control Variable
-float musicVolume = 0.5f; // Volume: 0.0 (mute) to 1.0 (max)
+// Volume Control Variable
+float musicVolume = 0.2f; // Volume: 0.0 (mute) to 1.0 (max)
+
+// Pomodoro Timer Variables
+enum TimerState { STOPPED, RUNNING, PAUSED };
+TimerState timerState = STOPPED;
+float timerDuration = 1500.0f; // Default 25 minutes in seconds
+float timerRemaining = 1500.0f;
+bool timerFinished = false;
 
 // Shader program ID
 GLuint shaderProgram;
@@ -53,16 +63,19 @@ GLuint shaderProgram;
 // VAO and VBO IDs
 GLuint VAO, VBO;
 
-// *** Added: Texture ID
+// Texture ID
 GLuint particleTexture;
 
-// *** Added: Uniform locations
+// Uniform locations
 GLint useTextureLocation;
 GLint particleTextureLocation;
 
-// *** Added: Audio Assets
-Mix_Music* bgm = NULL;                // Background music
-Mix_Chunk* clickSound = NULL;         // Sound effect for mouse clicks
+// Audio Assets
+Mix_Music* bgm = NULL;                    // Background music
+Mix_Chunk* clickSound = NULL;             // Sound effect for mouse clicks
+Mix_Chunk* clickClockSound = NULL;        // Sound effect for Pomodoro button clicks
+Mix_Chunk* startSound = NULL;             // Sound when timer starts
+Mix_Chunk* finishCountdownSound = NULL;   // Sound when timer finishes
 
 // Function to check and print OpenGL errors
 void checkOpenGLError(const char* stmt, const char* fname, int line) {
@@ -128,7 +141,7 @@ GLuint compileShaders(const char* vertexSource, const char* fragmentSource) {
     return program;
 }
 
-// *** Added: Function to load texture using stb_image
+// Function to load texture using stb_image
 GLuint loadTexture(const char* filepath) {
     int width, height, nrChannels;
     unsigned char* data = stbi_load(filepath, &width, &height, &nrChannels, 0);
@@ -147,14 +160,17 @@ GLuint loadTexture(const char* filepath) {
     GL_CHECK(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR));
     GL_CHECK(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR));
 
-    // Determine image format
-    GLenum format;
+    // Determine image format with default
+    GLenum format = GL_RGB; // Default format
     if (nrChannels == 1)
         format = GL_RED;
     else if (nrChannels == 3)
         format = GL_RGB;
     else if (nrChannels == 4)
         format = GL_RGBA;
+    else {
+        printf("Unsupported number of channels (%d) in texture: %s. Using GL_RGB as default.\n", nrChannels, filepath);
+    }
 
     // Upload the texture data
     GL_CHECK(glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data));
@@ -164,7 +180,7 @@ GLuint loadTexture(const char* filepath) {
     return texture;
 }
 
-// *** Added: Function to initialize SDL2 and SDL_mixer for audio
+// Function to initialize SDL2 and SDL_mixer for audio
 bool initAudio() {
     if (SDL_Init(SDL_INIT_AUDIO) < 0) {
         printf("SDL could not initialize! SDL_Error: %s\n", SDL_GetError());
@@ -180,7 +196,7 @@ bool initAudio() {
     return true;
 }
 
-// *** Added: Function to load audio assets
+// Function to load audio assets
 bool loadAudio() {
     // Load background music
     bgm = Mix_LoadMUS("assets/synthwave_bgm.mp3");
@@ -196,20 +212,60 @@ bool loadAudio() {
         return false;
     }
 
+    // Load Pomodoro sound effects
+    clickClockSound = Mix_LoadWAV("assets/clickClock.wav");
+    if (!clickClockSound) {
+        printf("Failed to load clickClock sound! SDL_mixer Error: %s\n", Mix_GetError());
+        return false;
+    }
+
+    startSound = Mix_LoadWAV("assets/startSound.wav");
+    if (!startSound) {
+        printf("Failed to load startSound! SDL_mixer Error: %s\n", Mix_GetError());
+        return false;
+    }
+
+    finishCountdownSound = Mix_LoadWAV("assets/finishCountdown.wav");
+    if (!finishCountdownSound) {
+        printf("Failed to load finishCountdown sound! SDL_mixer Error: %s\n", Mix_GetError());
+        return false;
+    }
+
     return true;
 }
 
-// *** Added: Function to play background music
+// Function to play background music
 void playBackgroundMusic() {
     if (Mix_PlayMusic(bgm, -1) == -1) { // -1 for infinite loop
         printf("Mix_PlayMusic: %s\n", Mix_GetError());
     }
 }
 
-// *** Added: Function to play click sound
+// Function to play click sound
 void playClickSound() {
     if (Mix_PlayChannel(-1, clickSound, 0) == -1) { // -1 for first available channel
         printf("Mix_PlayChannel (Click): %s\n", Mix_GetError());
+    }
+}
+
+// Function to play Pomodoro button click sound
+void playClickClockSound() {
+    if (Mix_PlayChannel(-1, clickClockSound, 0) == -1) { // -1 for first available channel
+        printf("Mix_PlayChannel (ClickClock): %s\n", Mix_GetError());
+    }
+}
+
+// Function to play start timer sound
+void playStartSound() {
+    if (Mix_PlayChannel(-1, startSound, 0) == -1) { // -1 for first available channel
+        printf("Mix_PlayChannel (Start): %s\n", Mix_GetError());
+    }
+}
+
+// Function to play finish countdown sound
+void playFinishCountdownSound() {
+    if (Mix_PlayChannel(-1, finishCountdownSound, 0) == -1) { // -1 for first available channel
+        printf("Mix_PlayChannel (FinishCountdown): %s\n", Mix_GetError());
     }
 }
 
@@ -247,15 +303,14 @@ void initRendering() {
     }
     )";
 
-    // *** Modified Fragment Shader to use texture conditionally
-    // Option 1: Multiply base color with texture color
+    // Modified Fragment Shader to use texture conditionally
     const char* fragmentSource = R"(
     #version 150 core
     in vec4 fragColor;
     out vec4 outColor;
 
-    uniform sampler2D particleTexture; // *** Added sampler uniform
-    uniform bool useTexture;           // *** Added uniform to toggle texture usage
+    uniform sampler2D particleTexture; // Sampler uniform
+    uniform bool useTexture;           // Uniform to toggle texture usage
 
     void main()
     {
@@ -263,7 +318,7 @@ void initRendering() {
             // Sample the texture using gl_PointCoord
             vec4 texColor = texture(particleTexture, gl_PointCoord);
             if (texColor.a < 0.1)
-                discard; // Optional: Discard transparent fragments for better performance
+                discard; // Discard transparent fragments for better performance
 
             outColor = fragColor * texColor; // Apply texture color
         }
@@ -304,13 +359,13 @@ void initRendering() {
     // Unbind VAO
     GL_CHECK(glBindVertexArray(0));
 
-    // *** Added: Load particle texture
+    // Load particle texture
     particleTexture = loadTexture("assets/particle.png"); // Ensure 'assets/particle.png' exists in your project directory
     if (particleTexture == 0) {
         printf("Warning: Particle texture not loaded. Texture-based particles will be disabled.\n");
     }
 
-    // *** Added: Set texture uniform in shader
+    // Set texture uniform in shader
     GL_CHECK(glUseProgram(shaderProgram));
     particleTextureLocation = glGetUniformLocation(shaderProgram, "particleTexture");
     if (particleTextureLocation == -1) {
@@ -318,7 +373,7 @@ void initRendering() {
     }
     GL_CHECK(glUniform1i(particleTextureLocation, 0)); // Texture unit 0
 
-    // *** Added: Get uniform location for 'useTexture'
+    // Get uniform location for 'useTexture'
     useTextureLocation = glGetUniformLocation(shaderProgram, "useTexture");
     if (useTextureLocation == -1) {
         printf("Failed to find 'useTexture' uniform location.\n");
@@ -350,7 +405,7 @@ void updateVBO(int maxParticlesToUpdate) {
     delete[] data;
 }
 
-// *** Modified Rendering Function to bind texture and set 'useTexture' uniform
+// Modified Rendering Function to bind texture and set 'useTexture' uniform
 void renderParticlesModern(int maxParticlesToRender, bool useTextureFlag) {
     // Use shader program
     GL_CHECK(glUseProgram(shaderProgram));
@@ -434,7 +489,7 @@ void initParticle(Particle *p) {
     reinitParticle(p, initialX, initialY, false); // Initialize as regular particle
 
     // Debug: Print base color
-    printf("Initialized Particle with Base Color: R=%.2f, G=%.2f, B=%.2f\n", baseColor[0], baseColor[1], baseColor[2]);
+    // printf("Initialized Particle with Base Color: R=%.2f, G=%.2f, B=%.2f\n", baseColor[0], baseColor[1], baseColor[2]);
 }
 
 // Function to initialize all particles
@@ -456,12 +511,8 @@ void createExplosion(float x, float y) {
     }
     printf("Created explosion at (%.2f, %.2f) with %d particles.\n", x, y, EXPLOSION_PARTICLES);
 
-    // *** Optional: Play explosion sound effect (if implemented)
-    // Ensure you have loaded an 'explosion.wav' and have a corresponding Mix_Chunk*
-    // Mix_Chunk* explosionSound = Mix_LoadWAV("assets/explosion.wav");
-    // if (explosionSound) {
-    //     Mix_PlayChannel(-1, explosionSound, 0);
-    // }
+    // Optional: Play explosion sound effect (if implemented)
+    // playExplosionSound(); // Implement this function similarly to playClickSound()
 }
 
 // Function to update all particles
@@ -501,7 +552,7 @@ void updateParticles(float deltaTime, int maxParticlesToUpdate, int explosionCha
             particles[i].life = 0.0f; // End the life of the exploding particle
             printf("Particle %d exploded at (%.2f, %.2f)\n", i, particles[i].x, particles[i].y);
 
-            // *** Play explosion sound effect (if implemented)
+            // Play explosion sound effect (if implemented)
             // playExplosionSound(); // Implement this function similarly to playClickSound()
         }
 
@@ -511,12 +562,23 @@ void updateParticles(float deltaTime, int maxParticlesToUpdate, int explosionCha
         }
 
         // Debug: Print positions and sizes of first 5 particles
+        /*
         if (i < 5) {
             printf("Particle %d Position: (%.2f, %.2f), Size: %.2f, Color: R=%.2f, G=%.2f, B=%.2f, A=%.2f\n",
                    i, particles[i].x, particles[i].y, particles[i].size,
                    particles[i].r, particles[i].g, particles[i].b, particles[i].a);
         }
+        */
     }
+}
+
+// Function to format time as MM:SS
+std::string formatTime(float seconds) {
+    int minutes = static_cast<int>(seconds) / 60;
+    int secs = static_cast<int>(seconds) % 60;
+    char buffer[6];
+    snprintf(buffer, sizeof(buffer), "%02d:%02d", minutes, secs);
+    return std::string(buffer);
 }
 
 // Function to shutdown rendering resources
@@ -524,16 +586,30 @@ void shutdownRendering() {
     glDeleteProgram(shaderProgram);
     glDeleteBuffers(1, &VBO);
     glDeleteVertexArrays(1, &VAO);
-    // *** Added: Delete texture
-    glDeleteTextures(1, &particleTexture); // *** Added
+    // Delete texture
+    glDeleteTextures(1, &particleTexture);
 }
 
-// *** Added: Function to shutdown audio resources
+// Function to shutdown audio resources
 void shutdownAudio() {
     Mix_FreeChunk(clickSound);
+    Mix_FreeChunk(clickClockSound);
+    Mix_FreeChunk(startSound);
+    Mix_FreeChunk(finishCountdownSound);
     Mix_FreeMusic(bgm);
     Mix_CloseAudio();
     SDL_Quit();
+}
+
+// Callback function to adjust the OpenGL viewport when the window is resized
+void framebuffer_size_callback(GLFWwindow* window, int width, int height)
+{
+    // Prevent division by zero
+    if (height == 0)
+        height = 1;
+
+    // Set the viewport to cover the new window size
+    glViewport(0, 0, width, height);
 }
 
 // Main function
@@ -550,8 +626,11 @@ int main() {
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE); // Required on Mac
 
+    // Explicitly set the window to be resizable
+    glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+
     // Create a window with OpenGL context
-    GLFWwindow* window = glfwCreateWindow(800, 600, "Bonfire Simulator", NULL, NULL);
+    GLFWwindow* window = glfwCreateWindow(800, 600, "Bonfire Simulator with Pomodoro Timer", NULL, NULL);
     if (!window) {
         glfwTerminate();
         printf("Failed to create GLFW window\n");
@@ -560,10 +639,16 @@ int main() {
 
     glfwMakeContextCurrent(window); // Make the created window the current context for OpenGL
 
+    // Register the framebuffer size callback
+    glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
+
+    // Initialize ImGui
+    ImGui_Init(window);
+
     // Initialize GLEW and modern OpenGL rendering
     initRendering();
 
-    // *** Added: Initialize SDL2 and SDL_mixer for audio
+    // Initialize SDL2 and SDL_mixer for audio
     if (!initAudio()) {
         printf("Audio initialization failed.\n");
         shutdownRendering();
@@ -572,7 +657,7 @@ int main() {
         return -1;
     }
 
-    // *** Added: Load audio assets
+    // Load audio assets
     if (!loadAudio()) {
         printf("Loading audio assets failed.\n");
         shutdownAudio();
@@ -582,11 +667,8 @@ int main() {
         return -1;
     }
 
-    // *** Added: Play background music
+    // Play background music
     playBackgroundMusic();
-
-    // Initialize ImGui
-    ImGui_Init(window);
 
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f); // Set a plain black background
 
@@ -602,12 +684,23 @@ int main() {
     static float previousExplosionMaxSize = explosionMaxSize;
     bool explosionSizeChanged = false;
 
-    // *** Added: Variable to track texture usage
+    // Variable to track texture usage
     bool useTexture = false;
+
+    // Initialize timing variables
+    double lastTime = glfwGetTime(); // GLFW's time in seconds
 
     // Main loop: runs until the window is closed
     while (!glfwWindowShouldClose(window)) {
-        float deltaTime = 0.016f; // Fixed time step for consistent particle updates (~60 FPS)
+        // Calculate deltaTime
+        double currentTime = glfwGetTime();
+        float deltaTime = static_cast<float>(currentTime - lastTime);
+        lastTime = currentTime;
+
+        // Optional: Clamp deltaTime to prevent issues on frame drops
+        if (deltaTime > 0.1f) {
+            deltaTime = 0.1f; // Cap to 100ms
+        }
 
         // Clear the screen each frame to avoid ghosting or trails from previous particles
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -615,12 +708,13 @@ int main() {
         // Start a new ImGui frame
         ImGui_NewFrame();
 
-        // Begin a new ImGui window for controls
-        ImGui::Begin("Particle Controls");
+        // === 1. Particle Controls Window ===
+        ImGui::Begin("Particle Controls", nullptr, ImGuiWindowFlags_NoCollapse); // Allow resizing
 
-        // Add sliders to control particle simulation parameters
+        ImGui::Text("=== Particle Controls ===");
+        // Sliders to control particle simulation parameters
         ImGui_AddSliderInt("Max Particles", &maxParticles, 100, MAX_PARTICLES);
-        ImGui_AddSliderInt("Explosion Chance (%)", &explosionChance, 1, 100);
+        ImGui_AddSliderInt("Explosion Chance (%%):", &explosionChance, 1, 100); // Fixed '%' to '%%'
 
         // Particle Size Controls
         ImGui_AddSliderFloat("Min Size", &minSize, 1.0f, 50.0f);
@@ -641,35 +735,51 @@ int main() {
         ImGui_AddSliderFloat("Max Speed Y", &maxSpeedY, minSpeedY, 0.2f);
 
         // Color Controls (Use color picker)
-        // *** Updated to use ImGuiColorEditFlags_Float
-        ImGui::ColorEdit3("Base Color", baseColor, ImGuiColorEditFlags_Float);
+        ImGui_AddColorEdit3("Base Color", baseColor);
 
-        // Debug: Print base color
-        printf("Base Color Updated: R=%.2f, G=%.2f, B=%.2f\n", baseColor[0], baseColor[1], baseColor[2]);
-
-        // *** Added: Volume Control Slider
+        // === Audio Controls ===
+        ImGui::Separator();
+        ImGui::Text("=== Audio Controls ===");
+        // Volume Control Slider
         ImGui::SliderFloat("Music Volume", &musicVolume, 0.0f, 1.0f);
+        // Display the volume percentage next to the slider
+        ImGui::SameLine();
+        ImGui::Text("%.0f%%", musicVolume * 100.0f);
         // Update the music volume based on slider
-        Mix_VolumeMusic((int)(musicVolume * MIX_MAX_VOLUME));
+        Mix_VolumeMusic(static_cast<int>(musicVolume * MIX_MAX_VOLUME));
 
-        // *** Added: Button to toggle texture usage
-        if (ImGui_Button(useTexture ? "Deactivate Texture" : "Activate Texture")) { // Toggle button label
+        // Button to toggle texture usage
+        if (ImGui::Button(useTexture ? "Deactivate Texture" : "Activate Texture")) { // Toggle button label
             if (particleTexture != 0) { // Only allow activation if texture is loaded
                 useTexture = !useTexture;
                 printf("Texture usage %s.\n", useTexture ? "activated" : "deactivated");
-                playClickSound(); // Play click sound when toggling texture
+                playClickClockSound(); // Play Pomodoro button click sound when toggling texture
             } else {
                 printf("Cannot activate texture. Texture not loaded.\n");
+                // Notify the user via ImGui
+                ImGui::OpenPopup("Texture Error");
             }
         }
 
-        // Buttons for additional actions
-        if (ImGui_Button("Reset Particles")) {
+        // Optional: Popup for texture error
+        if (ImGui::BeginPopup("Texture Error")) {
+            ImGui::Text("Particle texture not loaded.");
+            if (ImGui::Button("OK")) {
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
+
+        // === Additional Actions ===
+        ImGui::Separator();
+        ImGui::Text("=== Additional Actions ===");
+        if (ImGui::Button("Reset Particles")) {
             initParticles();
             printf("Particles reset.\n");
             playClickSound(); // Play click sound when button is pressed
         }
-        if (ImGui_Button("Trigger Explosion")) {
+        ImGui::SameLine();
+        if (ImGui::Button("Trigger Explosion")) {
             // Create an explosion at a random position within a certain range
             float explosionX = ((float)rand() / RAND_MAX - 0.5f) * 0.15f;
             float explosionY = -0.75f + ((float)rand() / RAND_MAX) * 1.5f; // Between bottom and top
@@ -679,11 +789,117 @@ int main() {
         }
 
         // Display current parameter values
-        ImGui::Text("Current Particle Count: %d", maxParticles);
-        ImGui::Text("Current Explosion Chance: %d%%", explosionChance);
+        ImGui::Separator();
+        ImGui::Text("=== Current Parameters ===");
+        ImGui::Text("Particle Count: %d", maxParticles);
+        ImGui::Text("Explosion Chance: %d%%", explosionChance);
 
-        // End "Particle Controls" window
-        ImGui::End();
+        ImGui::End(); // End of Particle Controls Window
+
+        // === 2. Pomodoro Timer Window ===
+        ImGui::Begin("Pomodoro Timer", nullptr, ImGuiWindowFlags_NoCollapse); // Allow resizing
+
+        ImGui::Text("=== Pomodoro Timer ===");
+
+        // Pomodoro Duration Selection
+        const char* durations[] = { "15 Minutes", "25 Minutes", "50 Minutes" };
+        static int currentDuration = 1; // Default to "25 Minutes"
+
+        if (ImGui::Combo("Select Duration", &currentDuration, durations, IM_ARRAYSIZE(durations))) {
+            // Play button click sound when changing duration
+            playClickClockSound();
+            // Set timer duration based on selection
+            if (currentDuration == 0)
+                timerDuration = 900.0f; // 15 minutes
+            else if (currentDuration == 1)
+                timerDuration = 1500.0f; // 25 minutes
+            else if (currentDuration == 2)
+                timerDuration = 3000.0f; // 50 minutes
+
+            // Reset remaining time
+            timerRemaining = timerDuration;
+            timerState = STOPPED;
+        }
+
+        // Determine color based on timer state
+        ImVec4 timerColor;
+        if (timerState == RUNNING) {
+            timerColor = ImVec4(0.0f, 1.0f, 0.0f, 1.0f); // Green
+        }
+        else if (timerState == PAUSED) {
+            timerColor = ImVec4(1.0f, 1.0f, 0.0f, 1.0f); // Yellow
+        }
+        else if (timerFinished) {
+            timerColor = ImVec4(1.0f, 0.0f, 0.0f, 1.0f); // Red
+        }
+        else {
+            timerColor = ImVec4(1.0f, 1.0f, 1.0f, 1.0f); // White
+        }
+
+        // Start Font Scaling using PushFont
+        if (g_largeFont) {
+            ImGui::PushFont(g_largeFont);
+        }
+
+        // Apply color to the timer text
+        ImGui::PushStyleColor(ImGuiCol_Text, timerColor);
+
+        // Display the countdown timer
+        std::string timerDisplay = formatTime(timerRemaining);
+        ImGui::Text("Time Remaining: %s", timerDisplay.c_str());
+
+        ImGui::PopStyleColor(); // Restore original text color
+        if (g_largeFont) {
+            ImGui::PopFont();
+        }
+        // End Font Scaling
+
+        // Add spacing between timer and progress bar
+        ImGui::Spacing();
+
+        // Render progress bar with timer text as label
+        float progress = (timerDuration - timerRemaining) / timerDuration;
+        ImGui::ProgressBar(progress, ImVec2(0.0f, 0.0f), timerDisplay.c_str());
+
+        // Pomodoro Control Buttons
+        // Start Button
+        if (ImGui::Button("Start")) {
+            if (timerState != RUNNING) {
+                timerState = RUNNING;
+                playStartSound(); // Play start timer sound
+            }
+            playClickClockSound(); // Play button click sound
+        }
+        ImGui::SameLine();
+        // Pause Button
+        if (ImGui::Button("Pause")) {
+            if (timerState == RUNNING) {
+                timerState = PAUSED;
+            }
+            playClickClockSound(); // Play button click sound
+        }
+        ImGui::SameLine();
+        // Reset Button
+        if (ImGui::Button("Reset")) {
+            timerState = STOPPED;
+            timerRemaining = timerDuration;
+            playClickClockSound(); // Play button click sound
+        }
+
+        ImGui::End(); // End of Pomodoro Timer Window
+
+        // Handle Timer Completion Popup
+        if (timerFinished) {
+            ImGui::OpenPopup("Timer Finished");
+
+            if (ImGui::BeginPopup("Timer Finished")) {
+                ImGui::Text("Pomodoro Timer Completed!");
+                if (ImGui::Button("OK")) {
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::EndPopup();
+            }
+        }
 
         // Check for regular size changes
         if (minSize != previousMinSize || maxSize != previousMaxSize) {
@@ -700,9 +916,11 @@ int main() {
                 if (!particles[i].exploding) {
                     particles[i].size = ((float)rand() / RAND_MAX) * (maxSize - minSize) + minSize;
                     // Debug: Print new size for the first few particles
+                    /*
                     if (i < 5) {
                         printf("Particle %d New Size: %.2f\n", i, particles[i].size);
                     }
+                    */
                 }
             }
             sizeChanged = false;
@@ -724,26 +942,33 @@ int main() {
                 if (particles[i].exploding) {
                     particles[i].size = ((float)rand() / RAND_MAX) * (explosionMaxSize - explosionMinSize) + explosionMinSize;
                     // Debug: Print new size for the first few explosion particles
+                    /*
                     if (i < 5) {
                         printf("Particle %d New Explosion Size: %.2f\n", i, particles[i].size);
                     }
+                    */
                 }
             }
             explosionSizeChanged = false;
             printf("All explosion particle sizes updated based on new explosionMinSize and explosionMaxSize.\n");
         }
 
-        // *** Removed: Handle Mouse Input for Click and Drag
-        // No longer needed since drag sound is removed
-
-        // *** Handle Keyboard Input and Other Sound Effects
-        // As per new requirements, only clicks on buttons should play sounds
-        // Thus, we remove or comment out any other sound triggers
-        /*
-        if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) {
-            playClickSound(); // Optional: Remove if you don't want sounds for keyboard inputs
+        // Handle Pomodoro Timer Logic
+        if (timerState == RUNNING) {
+            timerRemaining -= deltaTime;
+            if (timerRemaining <= 0.0f && !timerFinished) {
+                timerRemaining = 0.0f;
+                timerState = STOPPED;
+                timerFinished = true;
+                playFinishCountdownSound(); // Play finish countdown sound
+                printf("Pomodoro Timer Finished!\n");
+            }
         }
-        */
+
+        // Reset timerFinished flag if timer is restarted
+        if (timerState == RUNNING && timerFinished) {
+            timerFinished = false;
+        }
 
         // Update particle system with current user-controlled values
         updateParticles(deltaTime, maxParticles, explosionChance);
@@ -762,7 +987,7 @@ int main() {
     // Shutdown rendering resources
     shutdownRendering();
 
-    // *** Added: Shutdown audio resources
+    // Shutdown audio resources
     shutdownAudio();
 
     // Shutdown ImGui
